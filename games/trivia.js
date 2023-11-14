@@ -1,19 +1,18 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 const fs = require('fs');
- 
+
 const scoresFilePath = './scores.json';
- 
+
 let client = new WebSocket('wss://hack.chat/chat-ws');
- 
+
 let currentTriviaQuestion = null;
 let isAskingQuestion = false;
-let categoryRequestCounter = 0; // Counter to keep track of requested categories
- 
+
 function send(data) {
     client.send(JSON.stringify(data));
 }
- 
+
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -21,27 +20,27 @@ function shuffleArray(array) {
     }
     return array;
 }
- 
+
 function formatTriviaQuestionWithChoices(question) {
     const choices = question.incorrect_answers.map((incorrectAnswer) => [incorrectAnswer]);
     choices.push([question.correct_answer]);
     const shuffledChoices = shuffleArray(choices);
- 
+
     const correctAnswerIndex = shuffledChoices.findIndex((choice) => choice[0] === question.correct_answer);
- 
-    const formattedQuestion = `Category: ${question.category}\nQuestion: ${question.question}\nChoices:\n ${shuffledChoices.map((choice, index) => {
+
+    const formattedQuestion = `**Category:** ${question.category}\n\n> ${question.question}\n\n**Choices:**\n${shuffledChoices.map((choice, index) => {
         const letterLabel = String.fromCharCode(65 + index);
-        return `${letterLabel}. ${choice[0]}${index === correctAnswerIndex ? '' : ''}`;
+        return `> ${letterLabel}. ${choice[0]}${index === correctAnswerIndex ? ' ' : ''}`;
     }).join('\n')}`;
- 
+
     currentTriviaQuestion = {
         ...question,
         correctLetter: String.fromCharCode(65 + correctAnswerIndex)
     };
- 
+
     return formattedQuestion;
 }
- 
+
 const categoryIDs = {
     "general knowledge": 9,
     "books": 10,
@@ -52,7 +51,7 @@ const categoryIDs = {
     "video games": 15,
     "board games": 16,
     "science & nature": 17,
- 
+    "math": 19,
     "mythology": 20,
     "sports": 21,
     "geography": 22,
@@ -67,7 +66,7 @@ const categoryIDs = {
     "anime and manga": 31,
     "cartoon and animations": 32
 };
- 
+
 // Load scores from the scores.json file if it exists
 let userScores = {};
 if (fs.existsSync(scoresFilePath)) {
@@ -78,47 +77,58 @@ if (fs.existsSync(scoresFilePath)) {
         console.error('Error loading scores from scores.json:', error.message);
     }
 }
- 
+
 client.on('open', function () {
     console.log('Client connected');
     send({
         cmd: 'join',
-        channel: 'script',
+        channel: 'CTL',
         nick: 'TriviaBot'
     });
- 
+
     send({
         cmd: 'chat',
         text: 'Hello, I am a trivia bot! To see the available categories, type ?categories. To skip a question, type ?skip. To check the scores, type ?scores.'
     });
 });
- 
-// Handle incoming messages
-let userGuesses = {};
+
+let questionGuesses = {}; // Keep track of user guesses per question
 let triviaTimer; // Variable to keep track of the timer
- 
+let userHashes = {};
+
 client.on('message', async function (data) {
     let args = JSON.parse(data);
- 
-    if (args.cmd === 'chat') {
+
+    if(args.cmd == 'onlineSet') {
+	    for (var i = 0; i < args.users.length; i++) {
+            const { nick, hash } = args.users[i];
+
+            userHashes[nick] = hash;
+        }
+    }
+    else if(args.cmd == 'onlineAdd') {
+        const { nick, hash } = args;
+
+        userHashes[nick] = hash;
+    }
+    else if(args.cmd == 'onlineRemove') {
+        const { nick, hash } = args;
+
+        delete userHashes[nick];
+    }
+    else if (args.cmd === 'chat') {
         const { nick, text } = args;
         console.log(`${nick}: ${text}`);
- 
+
+        hash = userHashes[nick];
+
         if (text.toLowerCase() === '?trivia') {
             if (!isAskingQuestion) {
-                if (categoryRequestCounter > 0) {
-                    send({
-                        cmd: 'chat',
-                        text: 'A category is already requested. Please wait for the current question to finish or use ?skip to skip the current question.'
-                    });
-                } else {
-                    categoryRequestCounter++; // Increment the counter when a new category is requested
-                    send({
-                        cmd: 'chat',
-                        text: 'To start the trivia game, please choose a category from the following list:\n' +
-                            Object.keys(categoryIDs).map((categoryName) => `- ${categoryName}`).join('\n')
-                    });
-                }
+                send({
+                    cmd: 'chat',
+                    text: 'To start the trivia game, please choose a category from the following list:\n' +
+                        Object.keys(categoryIDs).map((categoryName) => `- ${categoryName}`).join('\n')
+                });
             } else {
                 send({
                     cmd: 'chat',
@@ -140,26 +150,23 @@ client.on('message', async function (data) {
                     text: 'Skipping the current question...'
                 });
                 clearTimeout(triviaTimer); // Clear the timer if the question is skipped
-                categoryRequestCounter--; // Decrement the counter when the question is skipped
             } else {
                 send({
                     cmd: 'chat',
                     text: 'There is no question to skip at the moment.'
                 });
             }
-        } else // ... (rest of the code)
- 
-        if (text.toLowerCase() === '?scores') {
-            // Display user scores in order from highest to lowest
+        } else if (text.toLowerCase() === '?scores') {
+            // Display scores in descending order from highest to lowest
             const sortedScores = Object.entries(userScores)
-                .sort((a, b) => b[1] - a[1]) // Sort in descending order based on the scores
-                .map(([user, score]) => `${user}: ${score}`)
-                .join(', '); // Join the scores with commas
- 
+                .sort((a, b) => b[1] - a[1])
+                .map(([user, score]) => `${user}: ${score} point${score !== 1 ? 's' : ''}`)
+                .join('\n');
+
             if (sortedScores) {
                 send({
                     cmd: 'chat',
-                    text: 'Current scores: ' + sortedScores
+                    text: 'Current scores:\n' + sortedScores
                 });
             } else {
                 send({
@@ -167,79 +174,66 @@ client.on('message', async function (data) {
                     text: 'No scores available yet.'
                 });
             }
-        }
- 
-        // ... (rest of the code)
-         else if (isAskingQuestion && currentTriviaQuestion) {
+        } else if (isAskingQuestion && currentTriviaQuestion) {
             const userAnswer = text.trim().toUpperCase();
- 
-            if (!userGuesses[nick] && userAnswer.length === 1 && userAnswer >= 'A' && userAnswer <= String.fromCharCode(65 + currentTriviaQuestion.incorrect_answers.length)) {
-                console.log(`${nick} guessed: ${userAnswer}`);
-                userGuesses[nick] = true;
- 
+
+            if (!questionGuesses[currentTriviaQuestion.question]) {
+                questionGuesses[currentTriviaQuestion.question] = {}; // Initialize guesses for the current question if not present.
+            }
+
+            if (!questionGuesses[currentTriviaQuestion.question][hash] && userAnswer.length === 1 && userAnswer >= 'A' && userAnswer <= String.fromCharCode(65 + currentTriviaQuestion.incorrect_answers.length)) {
+                console.log(`${hash} guessed: ${userAnswer}`);
+                questionGuesses[currentTriviaQuestion.question][hash] = true;
+
                 if (userAnswer === currentTriviaQuestion.correctLetter.trim().toUpperCase()) {
                     // Increment the user's score
                     userScores[nick] = (userScores[nick] || 0) + 1;
                     saveScoresToFile();
- 
                     send({
                         cmd: 'chat',
                         text: `Correct, ${nick}! ${userScores[nick]} point${userScores[nick] !== 1 ? 's' : ''} total. Well done! 🎉`
                     });
- 
+
                     isAskingQuestion = false;
                     currentTriviaQuestion = null;
                     clearTimeout(triviaTimer); // Clear the timer when a correct answer is received
- 
-                    // Allow users to request a new category after the current one is finished
-                    categoryRequestCounter--;
                 }
             }
         } else {
             const chosenCategory = text.toLowerCase();
             if (categoryIDs[chosenCategory]) {
-                if (categoryRequestCounter > 0) {
-                    send({
-                        cmd: 'chat',
-                        text: 'A category is already requested. Please wait for the current question to finish or use ?skip to skip the current question.'
-                    });
-                } else {
-                    categoryRequestCounter++; // Increment the counter when a new category is requested
-                    try {
-                        const triviaQuestion = await fetchTriviaQuestion(categoryIDs[chosenCategory]);
-                        if (triviaQuestion) {
-                            currentTriviaQuestion = triviaQuestion;
-                            userGuesses = {};
-                            sendNextTriviaQuestion();
-                            triviaTimer = setTimeout(() => {
-                                send({
-                                    cmd: 'chat',
-                                    text: `Time's up! The correct answer was ${currentTriviaQuestion.correct_answer}. Moving on to the next question...`
-                                });
-                                isAskingQuestion = false;
-                                currentTriviaQuestion = null;
-                                categoryRequestCounter = 0; // Reset the counter after the time's up message
-                            }, 30000); // 30 seconds timer
-                        } else {
+                try {
+                    const triviaQuestion = await fetchTriviaQuestion(categoryIDs[chosenCategory]);
+                    if (triviaQuestion) {
+                        currentTriviaQuestion = triviaQuestion;
+                        questionGuesses[currentTriviaQuestion.question] = {}; // Initialize guesses for the new question.
+                        sendNextTriviaQuestion();
+                        triviaTimer = setTimeout(() => {
                             send({
                                 cmd: 'chat',
-                                text: 'Sorry, there was an issue fetching a trivia question. Please try again later.'
+                                text: `Time's up! The correct answer was ${currentTriviaQuestion.correct_answer}. Moving on to the next question...`
                             });
-                        }
-                    } catch (error) {
-                        console.error('Error fetching trivia question:', error.message);
+                            isAskingQuestion = false;
+                            currentTriviaQuestion = null;
+                        }, 30000); // 30 seconds timer
+                    } else {
                         send({
                             cmd: 'chat',
                             text: 'Sorry, there was an issue fetching a trivia question. Please try again later.'
                         });
                     }
+                } catch (error) {
+                    console.error('Error fetching trivia question:', error.message);
+                    send({
+                        cmd: 'chat',
+                        text: 'Sorry, there was an issue fetching a trivia question. Please try again later.'
+                    });
                 }
             }
         }
     }
 });
- 
-// Function to fetch a trivia question from the Open Trivia Database API
+
 async function fetchTriviaQuestion(categoryID) {
     try {
         const response = await axios.get(`https://opentdb.com/api.php?amount=1&category=${categoryID}&type=multiple`);
@@ -251,8 +245,7 @@ async function fetchTriviaQuestion(categoryID) {
         throw new Error('Error fetching a trivia question.');
     }
 }
- 
-// Function to send the next trivia question to the chat
+
 function sendNextTriviaQuestion() {
     isAskingQuestion = true;
     const formattedQuestion = formatTriviaQuestionWithChoices(currentTriviaQuestion);
@@ -261,10 +254,14 @@ function sendNextTriviaQuestion() {
         text: formattedQuestion
     });
 }
- 
+
 // Function to save the userScores object to scores.json
 function saveScoresToFile() {
     try {
+        const sortedScores = Object.entries(userScores)
+            .sort((a, b) => b[1] - a[1])
+            .map(([user, score]) => `${user}: ${score} point${score !== 1 ? 's' : ''}`)
+            .join('\n');
         const scoresData = JSON.stringify(userScores, null, 2);
         fs.writeFileSync(scoresFilePath, scoresData, 'utf8');
     } catch (error) {
